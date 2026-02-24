@@ -20,6 +20,7 @@ import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { WorkersPage } from "./pages/WorkersPage";
 import { ConfigurationPage } from "./pages/ConfigurationPage";
 import { ReportsPage } from "./pages/ReportsPage";
+import { ProfilePage } from "./pages/ProfilePage";
 
 function pageKeyFromPath(pathname: string): string {
   if (pathname.startsWith("/schedule")) return "schedule";
@@ -35,6 +36,7 @@ function pageKeyFromPath(pathname: string): string {
   if (pathname.startsWith("/workers")) return "workers";
   if (pathname.startsWith("/settings")) return "settings";
   if (pathname.startsWith("/reports")) return "reports";
+  if (pathname.startsWith("/profile")) return "profile";
   return "dashboard";
 }
 
@@ -93,6 +95,8 @@ export default function App() {
         return navigate("/settings");
       case "reports":
         return navigate("/reports");
+      case "profile":
+        return navigate("/profile");
       default:
         return navigate("/dashboard");
     }
@@ -139,6 +143,7 @@ export default function App() {
           <Route path="/workers" element={<WorkersPage />} />
           <Route path="/settings" element={<ConfigurationPage />} />
           <Route path="/reports" element={<ReportsPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
 
           {/* fallback */}
           <Route path="*" element={<Navigate to="/login" replace />} />

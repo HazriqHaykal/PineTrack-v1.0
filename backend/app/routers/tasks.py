@@ -4,6 +4,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from postgrest.exceptions import APIError
 
 from app.core.security import get_current_user
@@ -11,6 +12,11 @@ from app.core.supabase_client import supabase
 
 
 router = APIRouter(prefix="/api/tasks", tags=["Tasks"])
+
+
+class UpdateTaskRequest(BaseModel):
+    assigned_worker_id: str | None = None
+    assigned_worker_name: str | None = None
 
 
 @router.get("")
@@ -47,20 +53,28 @@ def list_tasks(
     elif has_proposed is False:
         q = q.is_("proposed_date", "null")
 
-    res = q.order("task_date").execute()
+    try:
+        res = q.order("task_date").execute()
+    except APIError as e:
+        message = e.args[0].get("message", str(e))
+        raise HTTPException(status_code=500, detail=message)
     return {"ok": True, "data": res.data or []}
 
 
 @router.get("/reschedule-proposals")
 def reschedule_proposals(user=Depends(get_current_user)):
     """Return tasks that have proposed_date set (pending approval)."""
-    res = (
-        supabase.table("tasks")
-        .select("*")
-        .not_.is_("proposed_date", "null")
-        .order("task_date")
-        .execute()
-    )
+    try:
+        res = (
+            supabase.table("tasks")
+            .select("*")
+            .not_.is_("proposed_date", "null")
+            .order("task_date")
+            .execute()
+        )
+    except APIError as e:
+        message = e.args[0].get("message", str(e))
+        raise HTTPException(status_code=500, detail=message)
     return {"ok": True, "data": res.data or []}
 
 
@@ -156,3 +170,26 @@ def reject_reschedule(task_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=e.args[0].get("message", str(e)))
 
     return {"ok": True, "data": (upd.data or [None])[0]}
+
+
+@router.put("/{task_id}")
+def update_task(task_id: str, payload: UpdateTaskRequest, user=Depends(get_current_user)):
+    update_fields = payload.dict(exclude_unset=True)
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+
+    try:
+        upd = (
+            supabase.table("tasks")
+            .update(update_fields)
+            .eq("id", task_id)
+            .select("*")
+            .execute()
+        )
+    except APIError as e:
+        raise HTTPException(status_code=400, detail=e.args[0].get("message", str(e)))
+
+    if not upd.data:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return {"ok": True, "data": upd.data[0]}

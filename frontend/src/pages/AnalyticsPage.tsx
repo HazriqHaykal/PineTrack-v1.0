@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card } from '../components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import {
   Select,
   SelectContent,
@@ -8,92 +7,160 @@ import {
   SelectTrigger,
   SelectValue
 } from '../components/ui/select';
-// Remove mockPlots import
-import { getAnalyticsHistory, getAnalyticsForecast, getRecommendations } from '../lib/api';
-import {
-  LineChart,
-  Line,
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend
-} from 'recharts';
-import { TrendingUp, TrendingDown } from 'lucide-react';
-import { ForecastFilter } from '../components/ForecastFilter';
+import { getAnalyticsHistory, getWeatherAnalytics, listTasks, getWeatherRescheduleSuggestions } from '../lib/api';
+import { GraphSection } from '../components/analytics/GraphSection';
+import { AlertTriangle, ArrowRight, CheckCircle2, Clock } from 'lucide-react';
+
+interface AnalyticsData {
+  date: string;
+  temperature_raw: number;
+  temperature_clean: number;
+  moisture_raw: number;
+  moisture_clean: number;
+  [key: string]: unknown;
+}
+
+interface WeatherAnalyticsItem {
+  date: string;
+  time?: string;
+  type?: string;
+  rain?: number;
+  [key: string]: unknown;
+}
+
+interface Suggestion {
+  type: string;
+  task_name: string;
+  task_id?: string;
+  original_date: string;
+  suggested_date: string;
+  reason: string;
+}
+
+function isImportantAlert(taskName: string): boolean {
+  const importantKeywords = [
+    'Waterlogging Risk',
+    'Irrigation Needed',
+    'Heat Stress Alert',
+    'Growth Retardation',
+    'Heavy Rain Alert',
+    'Rain Warning',
+    'Sensor Alert'
+  ];
+  return importantKeywords.some(keyword => taskName.includes(keyword));
+}
+
+function getRecommendationStyle(taskName: string) {
+  if (isImportantAlert(taskName)) {
+    return {
+      bgColor: 'bg-orange-50',
+      borderColor: 'border-orange-200',
+      textColor: 'text-orange-900',
+      iconColor: 'text-orange-600'
+    };
+  }
+  return {
+    bgColor: 'bg-green-50',
+    borderColor: 'border-green-200',
+    textColor: 'text-green-900',
+    iconColor: 'text-green-600'
+  };
+}
 
 export function AnalyticsPage() {
   const [selectedPlot, setSelectedPlot] = useState<string>('all');
-  const [forecastRange, setForecastRange] = useState<'1W'>('1W');
-  const [historicalData, setHistoricalData] = useState<any[]>([]);
-  const [forecastData, setForecastData] = useState<any[]>([]);
-  const [recommendations, setRecommendations] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [weatherSuggestions, setWeatherSuggestions] = useState<Suggestion[]>([]);
+  const [sensorAlerts, setSensorAlerts] = useState<Suggestion[]>([]);
+  const [hasUpcomingTasks, setHasUpcomingTasks] = useState<boolean>(true);
 
-  // Fetch real data on mount and when forecast range changes
   useEffect(() => {
     async function fetchData() {
+      const safeFetch = async <T,>(promise: Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await promise;
+        } catch (e) {
+          console.error('Partial fetch error:', e);
+          return fallback;
+        }
+      };
       try {
-        setLoading(true);
-        // 1. Fetch History (Fixed window for now)
-        const history = await getAnalyticsHistory(30);
-        const processedHistory = history.map((item: any) => ({
+        interface RawBackendHistory {
+          data_added: string;
+          temperature: number;
+          cleaned_temperature: number;
+          soil_moisture: number;
+          cleaned_soil_moisture: number;
+          [key: string]: unknown;
+        }
+
+        const history = await safeFetch<RawBackendHistory[]>(
+          getAnalyticsHistory(30, selectedPlot !== 'all' ? selectedPlot : undefined) as unknown as Promise<RawBackendHistory[]>,
+          []
+        );
+        const processedHistory: AnalyticsData[] = history.map((item) => ({
           ...item,
           date: item.data_added,
           temperature_raw: item.temperature,
           temperature_clean: item.cleaned_temperature,
           moisture_raw: item.soil_moisture,
-          moisture_clean: item.cleaned_soil_moisture,
-          nitrogen_raw: item.nitrogen,
-          nitrogen_clean: item.cleaned_nitrogen,
+          moisture_clean: item.cleaned_soil_moisture
         }));
-        setHistoricalData(processedHistory);
 
-        // 2. Fetch Forecast
-        const days = 7;
-        // if (forecastRange === '3M') days = 90;
-        // if (forecastRange === '1Y') days = 90;
+        const weather = await safeFetch<WeatherAnalyticsItem[]>(getWeatherAnalytics(), []);
 
-        const forecast = await getAnalyticsForecast(days);
-        // Process forecast if needed (dates are already ISO)
-        setForecastData(forecast);
+        const allTasksRes = await safeFetch(listTasks(), { ok: true, data: [] });
+        
+        // Look for tasks in the next 7 days instead of just tomorrow
+        const today = new Date();
+        const next7Days = new Date();
+        next7Days.setDate(today.getDate() + 7);
+        
+        const upcomingTasks = allTasksRes.data.filter((t) => {
+          const taskDate = new Date(t.task_date);
+          return taskDate >= today && taskDate <= next7Days;
+        });
 
-        // 3. Fetch Recommendations
-        const recs = await getRecommendations(205);
-        setRecommendations(recs);
+        // Get weather forecast for the next 7 days
+        const weatherForecastNext7Days = weather.filter((w: WeatherAnalyticsItem) => {
+          const dateStr = w.date || w.time;
+          if (!dateStr) return false;
+          const wDate = new Date(dateStr);
+          return wDate >= today && wDate <= next7Days;
+        });
 
+        let sensorSummary = null;
+        if (processedHistory.length > 0) {
+          const latest = processedHistory[processedHistory.length - 1];
+          sensorSummary = {
+            avg_moisture: latest.moisture_clean,
+            avg_temp: latest.temperature_clean
+          };
+        }
+
+        let suggestions = [];
+        try {
+          // Only call if we have tasks to analyze
+          if (upcomingTasks.length > 0) {
+            setHasUpcomingTasks(true);
+            const result = await getWeatherRescheduleSuggestions(upcomingTasks, weatherForecastNext7Days, sensorSummary);
+            const allSuggestions = result.suggestions ?? [];
+            const alerts = allSuggestions.filter(s => s.affected_by === 'sensor_health');
+            suggestions = allSuggestions.filter(s => s.affected_by !== 'sensor_health');
+            setSensorAlerts(alerts);
+          } else {
+            setHasUpcomingTasks(false);
+            console.log('No upcoming tasks in the next 7 days');
+          }
+        } catch (e) {
+          console.error('Insight suggestion error:', e);
+        }
+        setWeatherSuggestions(suggestions);
       } catch (err) {
-        console.error("Failed to fetch analytics:", err);
-      } finally {
-        setLoading(false);
+        console.error('Critical error in analytics:', err);
       }
     }
     fetchData();
-  }, [forecastRange]);
-
-
-  // Calculate trends safely
-  const calculateTrend = (key: string) => {
-    if (historicalData.length < 2) return 0;
-    const last = historicalData[historicalData.length - 1][key] || 0;
-    const first = historicalData[0][key] || 0;
-    return last - first;
-  };
-
-  const moistureTrend = calculateTrend('moisture_clean');
-  const nitrogenTrend = calculateTrend('nitrogen_clean');
-
-  // Format date for x-axis
-  const formatXAxis = (dateStr: string) => {
-    if (!dateStr) return "";
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit' });
-  };
+  }, [selectedPlot]);
 
   return (
     <div className="space-y-6">
@@ -109,7 +176,6 @@ export function AnalyticsPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Plots (Average)</SelectItem>
-            {/* For now we just hardcode plot options as we transition from mock data */}
             <SelectItem value="plot-1">Plot 1</SelectItem>
             <SelectItem value="plot-2">Plot 2</SelectItem>
             <SelectItem value="plot-3">Plot 3</SelectItem>
@@ -117,451 +183,88 @@ export function AnalyticsPage() {
         </Select>
       </div>
 
-      {/* Trend Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card className="p-5 rounded-2xl bg-white shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-[14px] text-[#6B7280]">Moisture Trend</p>
-            {moistureTrend > 0 ? (
-              <TrendingUp className="text-[#16A34A]" size={20} />
-            ) : (
-              <TrendingDown className="text-[#DC2626]" size={20} />
-            )}
-          </div>
-          <p className="text-[20px] text-[#111827] mb-1">
-            {historicalData.length > 0 ? (historicalData[historicalData.length - 1].moisture_clean || 0).toFixed(1) : '--'}%
-          </p>
-          <p className={`text-[14px] ${moistureTrend > 0 ? 'text-[#16A34A]' : 'text-[#DC2626]'}`}>
-            {moistureTrend > 0 ? '+' : ''}
-            {moistureTrend.toFixed(1)}% from start
-          </p>
-        </Card>
+      <GraphSection
+        plotId={selectedPlot !== 'all' ? selectedPlot : null}
+        renderBetween={
+          sensorAlerts.length > 0 ? (
+            <div className="space-y-2">
+              {sensorAlerts.map((alert, idx) => (
+                <div
+                  key={idx}
+                  className="bg-gradient-to-r from-[#FEE2E2] to-[#FECACA] border-l-4 border-[#DC2626] rounded-lg p-4 shadow-sm"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-8 h-8 bg-[#DC2626] rounded-full flex items-center justify-center text-white">
+                      <AlertTriangle className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="text-[16px] font-semibold text-[#991B1B] mb-1">
+                        {alert.task_name}
+                      </h4>
+                      <p className="text-[14px] text-[#7C2D12] leading-relaxed">
+                        {alert.reason}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null
+        }
+      />
 
-        <Card className="p-5 rounded-2xl bg-white shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-[14px] text-[#6B7280]">Nitrogen Trend</p>
-            {nitrogenTrend > 0 ? (
-              <TrendingUp className="text-[#16A34A]" size={20} />
-            ) : (
-              <TrendingDown className="text-[#DC2626]" size={20} />
-            )}
-          </div>
-          <p className="text-[20px] text-[#111827] mb-1">
-            {historicalData.length > 0 ? (historicalData[historicalData.length - 1].nitrogen_clean || 0).toFixed(0) : '--'} mg/kg
-          </p>
-          <p className={`text-[14px] ${nitrogenTrend > 0 ? 'text-[#16A34A]' : 'text-[#DC2626]'}`}>
-            {nitrogenTrend > 0 ? '+' : ''}
-            {nitrogenTrend.toFixed(0)} mg/kg from start
-          </p>
-        </Card>
-      </div>
-
-      {/* Detailed Charts */}
       <Card className="p-6 rounded-2xl bg-white shadow-sm">
-        <Tabs defaultValue="moisture" className="w-full">
-          <TabsList
-            className="
-    grid w-full grid-cols-3 gap-2
-    bg-transparent rounded-2xl mb-6
-  "
-          >
-            <TabsTrigger
-              value="moisture"
-              className="
-      rounded-xl px-3 py-2 text-sm
-      text-[#6B7280]
-      hover:bg-[#F3FFF7]
-      data-[state=active]:bg-[#DCFCE7]
-      data-[state=active]:text-[#15803D]
-      data-[state=active]:shadow-sm
-      transition-colors
-    "
-            >
-              Moisture
-            </TabsTrigger>
-
-            <TabsTrigger
-              value="nitrogen"
-              className="
-      rounded-xl px-3 py-2 text-sm
-      text-[#6B7280]
-      hover:bg-[#F3FFF7]
-      data-[state=active]:bg-[#DCFCE7]
-      data-[state=active]:text-[#15803D]
-      data-[state=active]:shadow-sm
-      transition-colors
-    "
-            >
-              Nitrogen
-            </TabsTrigger>
-
-            <TabsTrigger
-              value="temp"
-              className="
-      rounded-xl px-3 py-2 text-sm
-      text-[#6B7280]
-      hover:bg-[#F3FFF7]
-      data-[state=active]:bg-[#DCFCE7]
-      data-[state=active]:text-[#15803D]
-      data-[state=active]:shadow-sm
-      transition-colors
-    "
-            >
-              Temperature
-            </TabsTrigger>
-          </TabsList>
-
-
-          <TabsContent value="moisture" className="mt-0">
-            <h3 className="text-[20px] text-[#111827] mb-6">Soil Moisture Analysis</h3>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Historical Data Chart */}
-              <div className="bg-[#F9FAFB] rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.08)] flex flex-col">
-                <div className="h-[60px] flex items-start mb-4">
-                  <h4 className="text-[18px] text-[#111827]">Historical Data (Last 20 Days)</h4>
-                </div>
-                <ResponsiveContainer width="100%" height={320}>
-                  <AreaChart data={historicalData}>
-                    <defs>
-                      <linearGradient id="moistureCleanGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#16A34A" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#16A34A" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis
-                      dataKey="date"
-                      stroke="#6B7280"
-                      fontSize={12}
-                      tickFormatter={formatXAxis}
-                      interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      stroke="#6B7280"
-                      fontSize={12}
-                      label={{ value: '%', angle: -90, position: 'insideLeft', style: { fontSize: 14, fill: '#6B7280' } }}
-                    />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', fontSize: 14 }}
-                      labelStyle={{ color: '#111827' }}
-                    />
-                    <Legend verticalAlign="top" height={36}/>
-                    {/* Render Cleaned Data FIRST (Background Area) */}
-                    <Area
-                      type="monotone"
-                      dataKey="moisture_clean"
-                      stroke="#16A34A"
-                      fill="url(#moistureCleanGradient)"
-                      strokeWidth={2}
-                      name="Cleaned Data"
-                    />
-                    {/* Render Raw Data SECOND (Foreground Line) - Red for visibility */}
-                    <Area
-                      type="monotone"
-                      dataKey="moisture_raw"
-                      stroke="#DC2626"
-                      fill="none"
-                      strokeWidth={1}
-                      strokeDasharray="3 3"
-                      name="Raw Reading"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* Forecast Data Chart */}
-              <div className="bg-[#F9FAFB] rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.08)] flex flex-col">
-                <div className="h-[60px] flex flex-col mb-4">
-                  <h4 className="text-[18px] text-[#111827] mb-2">Forecast Data (Next 7 Days)</h4>
-                  <ForecastFilter selected={forecastRange} onChange={setForecastRange} />
-                </div>
-                <ResponsiveContainer width="100%" height={320}>
-                  <AreaChart data={forecastData} key={forecastRange}>
-                    <defs>
-                      <linearGradient id="moistureForeGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#86EFAC" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#86EFAC" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis
-                      dataKey="date"
-                      stroke="#6B7280"
-                      fontSize={12}
-                      tickFormatter={formatXAxis}
-                      interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      stroke="#6B7280"
-                      fontSize={12}
-                      label={{ value: '%', angle: -90, position: 'insideLeft', style: { fontSize: 14, fill: '#6B7280' } }}
-                    />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', fontSize: 14 }}
-                      labelStyle={{ color: '#111827' }}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="soil_moisture"
-                      stroke="#86EFAC"
-                      fill="url(#moistureForeGradient)"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      name="Moisture (%)"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-                <div className="flex items-center gap-2 mt-3 text-[14px] text-[#6B7280]">
-                  <div className="w-4 h-0.5 border-t-2 border-dashed border-[#86EFAC]"></div>
-                  <span>▬ ▬ Forecast (dashed)</span>
-                </div>
-              </div>
-            </div>
-          </TabsContent>
-
-
-
-          <TabsContent value="nitrogen" className="mt-0">
-            <h3 className="text-[20px] text-[#111827] mb-6">Nitrogen Content Analysis</h3>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Historical Data Chart */}
-              <div className="bg-[#F9FAFB] rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.08)] flex flex-col">
-                <div className="h-[60px] flex items-start mb-4">
-                  <h4 className="text-[18px] text-[#111827]">Historical Data (Last 20 Days)</h4>
-                </div>
-                <ResponsiveContainer width="100%" height={320}>
-                  <AreaChart data={historicalData}>
-                    <defs>
-                      <linearGradient id="nitrogenCleanGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#16A34A" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#16A34A" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis
-                      dataKey="date"
-                      stroke="#6B7280"
-                      fontSize={12}
-                      tickFormatter={formatXAxis}
-                      interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      stroke="#6B7280"
-                      fontSize={12}
-                      label={{ value: 'mg/kg', angle: -90, position: 'insideLeft', style: { fontSize: 14, fill: '#6B7280' } }}
-                    />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', fontSize: 14 }}
-                      labelStyle={{ color: '#111827' }}
-                    />
-                    <Legend verticalAlign="top" height={36}/>
-                    {/* Render Cleaned Data FIRST (Background Area) */}
-                    <Area
-                      type="monotone"
-                      dataKey="nitrogen_clean"
-                      stroke="#16A34A"
-                      fill="url(#nitrogenCleanGradient)"
-                      strokeWidth={2}
-                      name="Cleaned Data"
-                    />
-                    {/* Render Raw Data SECOND (Foreground Line) - Red for visibility */}
-                    <Area
-                      type="monotone"
-                      dataKey="nitrogen_raw"
-                      stroke="#DC2626"
-                      fill="none"
-                      strokeWidth={1}
-                      strokeDasharray="3 3"
-                      name="Raw Reading"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* Forecast Data Chart */}
-              <div className="bg-[#F9FAFB] rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.08)] flex flex-col">
-                <div className="h-[60px] flex flex-col mb-4">
-                  <h4 className="text-[18px] text-[#111827] mb-2">Forecast Data (Next 7 Days)</h4>
-                  <ForecastFilter selected={forecastRange} onChange={setForecastRange} />
-                </div>
-                <ResponsiveContainer width="100%" height={320}>
-                  <BarChart data={forecastData} key={forecastRange}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis
-                      dataKey="date"
-                      stroke="#6B7280"
-                      fontSize={12}
-                      tickFormatter={formatXAxis}
-                      interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      stroke="#6B7280"
-                      fontSize={12}
-                      label={{ value: 'mg/kg', angle: -90, position: 'insideLeft', style: { fontSize: 14, fill: '#6B7280' } }}
-                    />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', fontSize: 14 }}
-                      labelStyle={{ color: '#111827' }}
-                    />
-                    <Bar
-                      dataKey="nitrogen"
-                      fill="#86EFAC"
-                      radius={[8, 8, 0, 0]}
-                      name="Nitrogen (mg/kg)"
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-                <div className="flex items-center gap-2 mt-3 text-[14px] text-[#6B7280]">
-                  <div className="w-4 h-3 bg-[#86EFAC] rounded-t"></div>
-                  <span>▬ ▬ Forecast (lighter tone)</span>
-                </div>
-              </div>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="temp" className="mt-0">
-            <h3 className="text-[20px] text-[#111827] mb-6">Temperature Analysis</h3>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Historical Data Chart */}
-              <div className="bg-[#F9FAFB] rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.08)] flex flex-col">
-                <div className="h-[60px] flex items-start mb-4">
-                  <h4 className="text-[18px] text-[#111827]">Historical Data (Last 20 Days)</h4>
-                </div>
-                <ResponsiveContainer width="100%" height={320}>
-                  <AreaChart data={historicalData}>
-                    <defs>
-                      <linearGradient id="tempCleanGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#16A34A" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#16A34A" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis
-                      dataKey="date"
-                      stroke="#6B7280"
-                      fontSize={12}
-                      tickFormatter={formatXAxis}
-                      interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      stroke="#6B7280"
-                      fontSize={12}
-                      label={{ value: '°C', angle: -90, position: 'insideLeft', style: { fontSize: 14, fill: '#6B7280' } }}
-                    />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', fontSize: 14 }}
-                      labelStyle={{ color: '#111827' }}
-                    />
-                    <Legend verticalAlign="top" height={36}/>
-                    {/* Render Cleaned Data FIRST (Background Area) */}
-                    <Area
-                      type="monotone"
-                      dataKey="temperature_clean"
-                      stroke="#16A34A"
-                      fill="url(#tempCleanGradient)"
-                      strokeWidth={2}
-                      name="Cleaned Data"
-                    />
-                    {/* Render Raw Data SECOND (Foreground Line) - Red for visibility */}
-                    <Area
-                      type="monotone"
-                      dataKey="temperature_raw"
-                      stroke="#DC2626"
-                      fill="none"
-                      strokeWidth={1}
-                      strokeDasharray="3 3"
-                      name="Raw Reading"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* Forecast Data Chart */}
-              <div className="bg-[#F9FAFB] rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.08)] flex flex-col">
-                <div className="h-[60px] flex flex-col mb-4">
-                  <h4 className="text-[18px] text-[#111827] mb-2">Forecast Data (Next 7 Days)</h4>
-                  <ForecastFilter selected={forecastRange} onChange={setForecastRange} />
-                </div>
-                <ResponsiveContainer width="100%" height={320}>
-                  <AreaChart data={forecastData} key={forecastRange}>
-                    <defs>
-                      <linearGradient id="tempForeGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#86EFAC" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#86EFAC" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis
-                      dataKey="date"
-                      stroke="#6B7280"
-                      fontSize={12}
-                      tickFormatter={formatXAxis}
-                      interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      stroke="#6B7280"
-                      fontSize={12}
-                      label={{ value: '°C', angle: -90, position: 'insideLeft', style: { fontSize: 14, fill: '#6B7280' } }}
-                    />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', fontSize: 14 }}
-                      labelStyle={{ color: '#111827' }}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="temperature"
-                      stroke="#86EFAC"
-                      fill="url(#tempForeGradient)"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      name="Temperature (°C)"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-                <div className="flex items-center gap-2 mt-3 text-[14px] text-[#6B7280]">
-                  <div className="w-4 h-0.5 border-t-2 border-dashed border-[#86EFAC]"></div>
-                  <span>▬ ▬ Forecast (dashed)</span>
-                </div>
-              </div>
-            </div>
-          </TabsContent>
-
-
-        </Tabs>
-      </Card>
-
-      {/* AI Recommendations */}
-      <Card className="p-6 rounded-2xl bg-gradient-to-br from-[#10B981] to-[#059669] text-white shadow-sm">
         <div className="flex items-center justify-between mb-4">
-           <h3 className="text-[18px] font-semibold">AI Recommendations (Rule Based)</h3>
-           <span className="text-xs bg-white/20 px-2 py-1 rounded-lg">Updated Today</span>
+          <h3 className="text-[18px] font-semibold text-gray-900">Insight Recommendation</h3>
         </div>
-        
         <div className="space-y-3">
-          {recommendations.length > 0 ? (
-            recommendations.map((rec, idx) => (
-              <div key={idx} className="bg-white/10 rounded-xl p-4 shadow-sm border border-white/10 backdrop-blur-sm">
-                <div className="flex items-center gap-2 mb-1">
-                  <p className="text-[16px] font-medium opacity-95">
-                    {rec.category === 'Critical' && '🚨 '}
-                    {rec.category === 'Warning' && '⚠️ '}
-                    {rec.category === 'Action' && '⚡ '}
-                    {rec.category === 'Info' && 'ℹ️ '}
-                    {rec.parameter} Alert
+          {weatherSuggestions.length > 0 ? (
+            weatherSuggestions
+              .sort((a, b) => {
+                const aImportant = isImportantAlert(a.task_name);
+                const bImportant = isImportantAlert(b.task_name);
+                if (aImportant && !bImportant) return -1;
+                if (!aImportant && bImportant) return 1;
+                return 0;
+              })
+              .map((sugg, idx) => {
+              const iconMap: Record<string, React.ReactNode> = {
+                DELAY: <Clock className="w-4 h-4" />,
+                TIME_SHIFT: <ArrowRight className="w-4 h-4" />,
+                TRIGGER: <AlertTriangle className="w-4 h-4" />,
+                PRIORITY: <CheckCircle2 className="w-4 h-4" />
+              };
+              const icon = iconMap[sugg.type] ?? null;
+
+              const cleanTaskName = sugg.task_name.replace(/\s*\(ID:.*?\)\s*$/i, '').trim();
+              const style = getRecommendationStyle(sugg.task_name);
+
+              return (
+                <div key={idx} className={`${style.bgColor} rounded-xl p-4 shadow-sm border ${style.borderColor}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    {icon ? (
+                      <span className={`inline-flex items-center justify-center ${style.iconColor}`}>
+                        {icon}
+                      </span>
+                    ) : null}
+                    <p className={`text-[16px] font-medium ${style.textColor}`}>
+                      {cleanTaskName}
+                    </p>
+                  </div>
+                  <p className={`text-[14px] ${style.textColor} leading-relaxed opacity-80`}>
+                    {sugg.reason}
                   </p>
-                  {rec.priority <= 2 && (
-                    <span className="text-[10px] bg-red-500/80 px-2 py-0.5 rounded text-white font-bold">HIGH PRIORITY</span>
-                  )}
                 </div>
-                <p className="text-[14px] opacity-90 leading-relaxed font-light">
-                  {rec.message}
-                </p>
-              </div>
-            ))
+              );
+            })
           ) : (
-            <div className="bg-white/10 rounded-xl p-4 text-center">
-              <p className="opacity-90">✅ No critical actions required today.</p>
-              <p className="text-sm opacity-70 mt-1">System monitoring active.</p>
+            <div className="bg-gray-50 rounded-xl p-4 text-center border border-gray-200">
+              <p className="text-gray-700">No Actionable Insight Required</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {hasUpcomingTasks
+                  ? 'All upcoming tasks are safe to proceed.' 
+                  : 'No tasks scheduled in the next 7 days. Generate a schedule to see insights.'}
+              </p>
             </div>
           )}
         </div>

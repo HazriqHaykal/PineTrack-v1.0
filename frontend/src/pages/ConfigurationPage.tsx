@@ -1,59 +1,252 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Switch } from '../components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { defaultThresholds } from '../lib/mockData';
+import {
+  getThresholds,
+  updateThresholds,
+  resetThresholds,
+  getTaskEvalThresholds,
+  updateTaskEvalThresholds,
+  evaluateStatusThreshold,
+  listPlots,
+} from '../lib/api';
+import type { TaskEvalThresholdUpdate } from '../lib/api';
 import { toast } from 'sonner';
-import { Save, RotateCcw, Settings, Bell, Database } from 'lucide-react';
+import {
+  Save,
+  RotateCcw,
+  Settings,
+  Database,
+  ClipboardList,
+  Droplet,
+  Thermometer,
+  CloudRain,
+  Waves,
+} from 'lucide-react';
+
+const TASK_EVAL_DEFAULTS: TaskEvalThresholdUpdate = {
+  soil_moisture_min: 15,
+  soil_moisture_max: 25,
+  temperature_min: 22,
+  temperature_max: 32,
+  rain_mm_min: 2,
+  rain_mm_heavy: 10,
+  waterlogging_hours: 24,
+};
+
+type TaskEvalThresholdErrors = Partial<Record<keyof TaskEvalThresholdUpdate, string>>;
 
 export function ConfigurationPage() {
-  const [thresholds, setThresholds] = useState(defaultThresholds);
-  const [notifications, setNotifications] = useState({
-    email: true,
-    sms: false,
-    push: true,
-    criticalOnly: false
+  const [thresholds, setThresholds] = useState({
+    temperature: { min: 0, max: 60 },
+    moisture: { min: 1, max: 100 }
   });
+  const [taskEvalThresholds, setTaskEvalThresholds] =
+    useState<TaskEvalThresholdUpdate>(TASK_EVAL_DEFAULTS);
+  const [taskEvalErrors, setTaskEvalErrors] = useState<TaskEvalThresholdErrors>({});
+  const [loading, setLoading] = useState(true);
+  const [savingTaskEval, setSavingTaskEval] = useState(false);
 
-  const handleSaveThresholds = () => {
-    toast.success('Configuration saved successfully');
+  // Fetch thresholds on component mount
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      await Promise.all([fetchThresholds(), fetchTaskEvalThresholds()]);
+      setLoading(false);
+    };
+    load();
+  }, []);
+
+  const fetchThresholds = async () => {
+    try {
+      const data = await getThresholds();
+      setThresholds({
+        temperature: { min: data.temperature_min, max: data.temperature_max },
+        moisture: { min: data.soil_moisture_min, max: data.soil_moisture_max }
+      });
+    } catch (error) {
+      toast.error('Failed to load thresholds');
+      console.error(error);
+    }
   };
 
-  const handleResetThresholds = () => {
-    setThresholds(defaultThresholds);
-    toast.info('Thresholds reset to default values');
+  const fetchTaskEvalThresholds = async () => {
+    try {
+      const data = await getTaskEvalThresholds();
+      setTaskEvalThresholds({
+        soil_moisture_min: data.soil_moisture_min,
+        soil_moisture_max: data.soil_moisture_max,
+        temperature_min: data.temperature_min,
+        temperature_max: data.temperature_max,
+        rain_mm_min: data.rain_mm_min,
+        rain_mm_heavy: data.rain_mm_heavy,
+        waterlogging_hours: data.waterlogging_hours,
+      });
+    } catch (error) {
+      toast.error('Failed to load task evaluation thresholds');
+      console.error(error);
+      setTaskEvalThresholds(TASK_EVAL_DEFAULTS);
+    }
   };
 
-  const handleSaveNotifications = () => {
-    toast.success('Notification settings saved');
+  const handleSaveThresholds = async () => {
+    try {
+      await updateThresholds({
+        temperature_min: thresholds.temperature.min,
+        temperature_max: thresholds.temperature.max,
+        soil_moisture_min: thresholds.moisture.min,
+        soil_moisture_max: thresholds.moisture.max
+      });
+      toast.success('Configuration saved successfully');
+    } catch (error) {
+      toast.error('Failed to save configuration');
+      console.error(error);
+    }
+  };
+
+  const validateTaskEvalThresholds = (values: TaskEvalThresholdUpdate) => {
+    const errors: TaskEvalThresholdErrors = {};
+
+    if (values.soil_moisture_min < 0) {
+      errors.soil_moisture_min = 'Must be 0 or higher';
+    }
+    if (values.soil_moisture_max < 0) {
+      errors.soil_moisture_max = 'Must be 0 or higher';
+    }
+    if (values.temperature_min < 0) {
+      errors.temperature_min = 'Must be 0 or higher';
+    }
+    if (values.temperature_max < 0) {
+      errors.temperature_max = 'Must be 0 or higher';
+    }
+    if (values.rain_mm_min < 0) {
+      errors.rain_mm_min = 'Must be 0 or higher';
+    }
+    if (values.rain_mm_heavy < 0) {
+      errors.rain_mm_heavy = 'Must be 0 or higher';
+    }
+    if (values.waterlogging_hours < 1) {
+      errors.waterlogging_hours = 'Must be at least 1';
+    }
+    if (values.soil_moisture_min > values.soil_moisture_max) {
+      errors.soil_moisture_max = 'Max must be greater than min';
+    }
+    if (values.temperature_min > values.temperature_max) {
+      errors.temperature_max = 'Max must be greater than min';
+    }
+    if (values.rain_mm_min >= values.rain_mm_heavy) {
+      errors.rain_mm_min = 'Must be lower than heavy rain threshold';
+      errors.rain_mm_heavy = 'Must be higher than rain threshold';
+    }
+
+    return errors;
+  };
+
+  const handleSaveTaskEvalThresholds = async () => {
+    const errors = validateTaskEvalThresholds(taskEvalThresholds);
+    setTaskEvalErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      toast.error('Fix the highlighted fields before saving');
+      return;
+    }
+
+    try {
+      setSavingTaskEval(true);
+      await updateTaskEvalThresholds(taskEvalThresholds);
+      toast.success('Task evaluation thresholds saved');
+      const plotId = await resolveEvaluationPlotId();
+      if (!plotId) {
+        toast.info('No plots available for evaluation.');
+        return;
+      }
+      const date = formatLocalDate(new Date());
+      try {
+        const result = await evaluateStatusThreshold({
+          plot_id: plotId,
+          date,
+          device_id: 205,
+          reschedule_days: 2,
+        });
+        if (result.updated === 0) {
+          toast.info('No task status changes detected.');
+        } else {
+          toast.success(`Task statuses updated (${result.updated} tasks).`);
+        }
+        window.dispatchEvent(new Event('tasks:refresh'));
+      } catch (evalError) {
+        toast.error('Saved, but evaluation failed');
+        console.error(evalError);
+      }
+    } catch (error) {
+      toast.error('Failed to save task evaluation thresholds');
+      console.error(error);
+    } finally {
+      setSavingTaskEval(false);
+    }
+  };
+
+  const handleResetTaskEvalThresholds = () => {
+    setTaskEvalThresholds(TASK_EVAL_DEFAULTS);
+    setTaskEvalErrors({});
+    toast.info('Task evaluation thresholds reset to defaults');
+  };
+
+  const handleResetThresholds = async () => {
+    try {
+      await resetThresholds();
+      await fetchThresholds(); // Refresh data
+      toast.info('Thresholds reset to default values');
+    } catch (error) {
+      toast.error('Failed to reset thresholds');
+      console.error(error);
+    }
+  };
+
+  const formatLocalDate = (value: Date) => {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const resolveEvaluationPlotId = async () => {
+    const storedId = localStorage.getItem('selected_plot_id');
+    if (storedId) return storedId;
+    try {
+      const plotsRes = await listPlots();
+      return plotsRes.data?.[0]?.id ?? null;
+    } catch (error) {
+      console.error(error);
+      return null;
+    }
   };
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-[20px] text-[#111827]">System Configuration</h2>
-        <p className="text-[16px] text-[#374151]">Manage thresholds, notifications, and system preferences</p>
+        <p className="text-[16px] text-[#374151]">Manage thresholds and system preferences</p>
       </div>
 
-      <Tabs defaultValue="thresholds" className="w-full">
+      <Tabs defaultValue="sensor-thresholds" className="w-full">
         <TabsList className="grid w-full grid-cols-3 rounded-xl bg-transparent">
           <TabsTrigger
-            value="thresholds"
+            value="sensor-thresholds"
             className="rounded-lg gap-2 data-[state=active]:bg-[#B9EEC9] data-[state=active]:text-[#065F46] hover:bg-[#DFF7E8] transition"
           >
             <Settings size={16} />
-            Thresholds
+            Sensor Health Thresholds
           </TabsTrigger>
 
           <TabsTrigger
-            value="notifications"
+            value="task-thresholds"
             className="rounded-lg gap-2 data-[state=active]:bg-[#B9EEC9] data-[state=active]:text-[#065F46] hover:bg-[#DFF7E8] transition"
           >
-            <Bell size={16} />
-            Notifications
+            <ClipboardList size={16} />
+            Task Evaluation Thresholds
           </TabsTrigger>
 
           <TabsTrigger
@@ -70,11 +263,11 @@ export function ConfigurationPage() {
 
 
         {/* Thresholds Tab */}
-        <TabsContent value="thresholds" className="mt-6 space-y-6">
+        <TabsContent value="sensor-thresholds" className="mt-6 space-y-6">
           <Card className="p-6 rounded-2xl bg-white">
             <div className="flex items-center justify-between mb-6">
               <div>
-                <h3 className="text-[#111827] mb-1">Critical Thresholds</h3>
+                <h3 className="text-[#111827] mb-1">Sensor Health Thresholds</h3>
                 <p className="text-sm text-[#6B7280]">
                   Define acceptable ranges for soil and environmental parameters
                 </p>
@@ -127,98 +320,6 @@ export function ConfigurationPage() {
                         setThresholds({
                           ...thresholds,
                           moisture: { ...thresholds.moisture, max: Number(e.target.value) }
-                        })
-                      }
-                      className="rounded-xl"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* pH */}
-              <div className="p-5 bg-[#F9FAFB] rounded-xl">
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="w-8 h-8 bg-[#2563EB] rounded-lg flex items-center justify-center text-white">
-                    🧪
-                  </div>
-                  <div>
-                    <h4 className="text-[#111827]">Soil pH</h4>
-                    <p className="text-xs text-[#6B7280]">Acidity/alkalinity balance</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="phMin">Minimum</Label>
-                    <Input
-                      id="phMin"
-                      type="number"
-                      step="0.1"
-                      value={thresholds.ph.min}
-                      onChange={(e) =>
-                        setThresholds({
-                          ...thresholds,
-                          ph: { ...thresholds.ph, min: Number(e.target.value) }
-                        })
-                      }
-                      className="rounded-xl"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="phMax">Maximum</Label>
-                    <Input
-                      id="phMax"
-                      type="number"
-                      step="0.1"
-                      value={thresholds.ph.max}
-                      onChange={(e) =>
-                        setThresholds({
-                          ...thresholds,
-                          ph: { ...thresholds.ph, max: Number(e.target.value) }
-                        })
-                      }
-                      className="rounded-xl"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Nitrogen */}
-              <div className="p-5 bg-[#F9FAFB] rounded-xl">
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="w-8 h-8 bg-[#CA8A04] rounded-lg flex items-center justify-center text-white">
-                    🍃
-                  </div>
-                  <div>
-                    <h4 className="text-[#111827]">Nitrogen Content</h4>
-                    <p className="text-xs text-[#6B7280]">Essential nutrient for growth</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="nitrogenMin">Minimum (mg/kg)</Label>
-                    <Input
-                      id="nitrogenMin"
-                      type="number"
-                      value={thresholds.nitrogen.min}
-                      onChange={(e) =>
-                        setThresholds({
-                          ...thresholds,
-                          nitrogen: { ...thresholds.nitrogen, min: Number(e.target.value) }
-                        })
-                      }
-                      className="rounded-xl"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="nitrogenMax">Maximum (mg/kg)</Label>
-                    <Input
-                      id="nitrogenMax"
-                      type="number"
-                      value={thresholds.nitrogen.max}
-                      onChange={(e) =>
-                        setThresholds({
-                          ...thresholds,
-                          nitrogen: { ...thresholds.nitrogen, max: Number(e.target.value) }
                         })
                       }
                       className="rounded-xl"
@@ -285,81 +386,232 @@ export function ConfigurationPage() {
           </Card>
         </TabsContent>
 
-        {/* Notifications Tab */}
-        <TabsContent value="notifications" className="mt-6 space-y-6">
+        {/* Task Evaluation Thresholds Tab */}
+        <TabsContent value="task-thresholds" className="mt-6 space-y-6">
           <Card className="p-6 rounded-2xl bg-white">
-            <div className="mb-6">
-              <h3 className="text-[#111827] mb-1">Notification Preferences</h3>
-              <p className="text-sm text-[#6B7280]">
-                Choose how you want to receive alerts and updates
-              </p>
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-[#111827] mb-1">Task Evaluation Thresholds</h3>
+                <p className="text-sm text-[#6B7280]">
+                  Configure daily task evaluation rules for moisture, temperature, and rain
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                className="rounded-xl gap-2"
+                onClick={handleResetTaskEvalThresholds}
+              >
+                <RotateCcw size={16} />
+                Reset to Default
+              </Button>
             </div>
 
             <div className="space-y-6">
-              <div className="flex items-center justify-between p-4 bg-[#F9FAFB] rounded-xl">
-                <div className="flex-1">
-                  <h4 className="text-[#111827] mb-1">Email Notifications</h4>
-                  <p className="text-sm text-[#6B7280]">Receive alerts via email</p>
+              <div className="p-5 bg-[#F9FAFB] rounded-xl">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-8 h-8 bg-[#16A34A] rounded-lg flex items-center justify-center text-white">
+                    <Droplet size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-[#111827]">Soil Moisture</h4>
+                    <p className="text-xs text-[#6B7280]">Used to defer field tasks when soil is wet</p>
+                  </div>
                 </div>
-                <Switch
-                  checked={notifications.email}
-                  onCheckedChange={(checked: boolean) =>
-                    setNotifications({ ...notifications, email: checked })
-                  }
-                  aria-label="Toggle email notifications"
-                />
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="taskMoistureMin">Minimum (%)</Label>
+                    <Input
+                      id="taskMoistureMin"
+                      type="number"
+                      value={taskEvalThresholds.soil_moisture_min}
+                      onChange={(e) => {
+                        const next = {
+                          ...taskEvalThresholds,
+                          soil_moisture_min: Number(e.target.value),
+                        };
+                        setTaskEvalThresholds(next);
+                        setTaskEvalErrors(validateTaskEvalThresholds(next));
+                      }}
+                      className="rounded-xl"
+                    />
+                    {taskEvalErrors.soil_moisture_min && (
+                      <p className="text-xs text-[#DC2626]">{taskEvalErrors.soil_moisture_min}</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="taskMoistureMax">Maximum (%)</Label>
+                    <Input
+                      id="taskMoistureMax"
+                      type="number"
+                      value={taskEvalThresholds.soil_moisture_max}
+                      onChange={(e) => {
+                        const next = {
+                          ...taskEvalThresholds,
+                          soil_moisture_max: Number(e.target.value),
+                        };
+                        setTaskEvalThresholds(next);
+                        setTaskEvalErrors(validateTaskEvalThresholds(next));
+                      }}
+                      className="rounded-xl"
+                    />
+                    {taskEvalErrors.soil_moisture_max && (
+                      <p className="text-xs text-[#DC2626]">{taskEvalErrors.soil_moisture_max}</p>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              <div className="flex items-center justify-between p-4 bg-[#F9FAFB] rounded-xl">
-                <div className="flex-1">
-                  <h4 className="text-[#111827] mb-1">SMS Notifications</h4>
-                  <p className="text-sm text-[#6B7280]">Receive alerts via text message</p>
+              <div className="p-5 bg-[#F9FAFB] rounded-xl">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-8 h-8 bg-[#DC2626] rounded-lg flex items-center justify-center text-white">
+                    <Thermometer size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-[#111827]">Temperature</h4>
+                    <p className="text-xs text-[#6B7280]">Used to delay tasks during heat or cold stress</p>
+                  </div>
                 </div>
-                <Switch
-                  checked={notifications.sms}
-                  onCheckedChange={(checked: boolean) =>
-                    setNotifications({ ...notifications, sms: checked })
-                  }
-                  aria-label="Toggle SMS notifications"
-                />
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="taskTempMin">Minimum (AøC)</Label>
+                    <Input
+                      id="taskTempMin"
+                      type="number"
+                      value={taskEvalThresholds.temperature_min}
+                      onChange={(e) => {
+                        const next = {
+                          ...taskEvalThresholds,
+                          temperature_min: Number(e.target.value),
+                        };
+                        setTaskEvalThresholds(next);
+                        setTaskEvalErrors(validateTaskEvalThresholds(next));
+                      }}
+                      className="rounded-xl"
+                    />
+                    {taskEvalErrors.temperature_min && (
+                      <p className="text-xs text-[#DC2626]">{taskEvalErrors.temperature_min}</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="taskTempMax">Maximum (AøC)</Label>
+                    <Input
+                      id="taskTempMax"
+                      type="number"
+                      value={taskEvalThresholds.temperature_max}
+                      onChange={(e) => {
+                        const next = {
+                          ...taskEvalThresholds,
+                          temperature_max: Number(e.target.value),
+                        };
+                        setTaskEvalThresholds(next);
+                        setTaskEvalErrors(validateTaskEvalThresholds(next));
+                      }}
+                      className="rounded-xl"
+                    />
+                    {taskEvalErrors.temperature_max && (
+                      <p className="text-xs text-[#DC2626]">{taskEvalErrors.temperature_max}</p>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              <div className="flex items-center justify-between p-4 bg-[#F9FAFB] rounded-xl">
-                <div className="flex-1">
-                  <h4 className="text-[#111827] mb-1">Push Notifications</h4>
-                  <p className="text-sm text-[#6B7280]">Receive in-app notifications</p>
+              <div className="p-5 bg-[#F9FAFB] rounded-xl">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-8 h-8 bg-[#0EA5E9] rounded-lg flex items-center justify-center text-white">
+                    <CloudRain size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-[#111827]">Rain Thresholds</h4>
+                    <p className="text-xs text-[#6B7280]">Used to delay field tasks during rain events</p>
+                  </div>
                 </div>
-                <Switch
-                  checked={notifications.push}
-                  onCheckedChange={(checked: boolean) =>
-                    setNotifications({ ...notifications, push: checked })
-                  }
-                  aria-label="Toggle push notifications"
-                />
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="rainMin">Rain Threshold (mm)</Label>
+                    <Input
+                      id="rainMin"
+                      type="number"
+                      value={taskEvalThresholds.rain_mm_min}
+                      onChange={(e) => {
+                        const next = {
+                          ...taskEvalThresholds,
+                          rain_mm_min: Number(e.target.value),
+                        };
+                        setTaskEvalThresholds(next);
+                        setTaskEvalErrors(validateTaskEvalThresholds(next));
+                      }}
+                      className="rounded-xl"
+                    />
+                    {taskEvalErrors.rain_mm_min && (
+                      <p className="text-xs text-[#DC2626]">{taskEvalErrors.rain_mm_min}</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="rainHeavy">Heavy Rain Threshold (mm)</Label>
+                    <Input
+                      id="rainHeavy"
+                      type="number"
+                      value={taskEvalThresholds.rain_mm_heavy}
+                      onChange={(e) => {
+                        const next = {
+                          ...taskEvalThresholds,
+                          rain_mm_heavy: Number(e.target.value),
+                        };
+                        setTaskEvalThresholds(next);
+                        setTaskEvalErrors(validateTaskEvalThresholds(next));
+                      }}
+                      className="rounded-xl"
+                    />
+                    {taskEvalErrors.rain_mm_heavy && (
+                      <p className="text-xs text-[#DC2626]">{taskEvalErrors.rain_mm_heavy}</p>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              <div className="flex items-center justify-between p-4 bg-[#F9FAFB] rounded-xl">
-                <div className="flex-1">
-                  <h4 className="text-[#111827] mb-1">Critical Alerts Only</h4>
-                  <p className="text-sm text-[#6B7280]">Only receive critical threshold violations</p>
+              <div className="p-5 bg-[#F9FAFB] rounded-xl">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-8 h-8 bg-[#6366F1] rounded-lg flex items-center justify-center text-white">
+                    <Waves size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-[#111827]">Waterlogging Duration</h4>
+                    <p className="text-xs text-[#6B7280]">Hours of wet soil before tasks are postponed</p>
+                  </div>
                 </div>
-                <Switch
-                  checked={notifications.criticalOnly}
-                  onCheckedChange={(checked: boolean) =>
-                    setNotifications({ ...notifications, criticalOnly: checked })
-                  }
-                  aria-label="Toggle critical alerts only"
-                />
+                <div className="space-y-2 max-w-[240px]">
+                  <Label htmlFor="waterloggingHours">Waterlogging duration (hours)</Label>
+                  <Input
+                    id="waterloggingHours"
+                    type="number"
+                    value={taskEvalThresholds.waterlogging_hours}
+                    onChange={(e) => {
+                      const next = {
+                        ...taskEvalThresholds,
+                        waterlogging_hours: Number(e.target.value),
+                      };
+                      setTaskEvalThresholds(next);
+                      setTaskEvalErrors(validateTaskEvalThresholds(next));
+                    }}
+                    className="rounded-xl"
+                  />
+                  {taskEvalErrors.waterlogging_hours && (
+                    <p className="text-xs text-[#DC2626]">{taskEvalErrors.waterlogging_hours}</p>
+                  )}
+                </div>
               </div>
             </div>
 
-            <Button
-              className="w-full mt-6 bg-[#15803D] hover:bg-[#16A34A] rounded-xl gap-2"
-              onClick={handleSaveNotifications}
-            >
-              <Save size={16} />
-              Save Notification Settings
-            </Button>
+            <div className="flex gap-3 mt-6">
+              <Button
+                className="flex-1 bg-[#16A34A] hover:bg-[#16A34A] rounded-xl gap-2"
+                onClick={handleSaveTaskEvalThresholds}
+                disabled={loading || savingTaskEval}
+              >
+                <Save size={16} />
+                {savingTaskEval ? 'Saving...' : 'Save Thresholds'}
+              </Button>
+            </div>
           </Card>
         </TabsContent>
 

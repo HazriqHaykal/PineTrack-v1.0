@@ -1,9 +1,0 @@
-This folder contains all API route modules.
-Each file defines endpoints for one feature (auth, plots, tasks, etc.).
-
-routers/
-├── auth.py        # login, logout
-├── plots.py       # plot management
-├── tasks.py       # scheduling & tasks
-├── workers.py     # workers management
-├── sensors.py     # CropSense data

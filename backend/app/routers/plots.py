@@ -52,7 +52,11 @@ def pick_next_grid_slot(max_x: int = 20, max_y: int = 20) -> Tuple[float, float]
 @router.get("")
 def list_plots(user=Depends(get_current_user)):
     """List all plots (for Dashboard / Plot Management pages)."""
-    res = supabase.table("plots").select("*").order("created_at", desc=True).execute()
+    try:
+        res = supabase.table("plots").select("*").order("created_at", desc=True).execute()
+    except APIError as e:
+        message = e.args[0].get("message", str(e))
+        raise HTTPException(status_code=500, detail=message)
     return {"ok": True, "data": res.data or []}
 
 
@@ -130,11 +134,25 @@ def create_plot_with_plan(
 
 @router.delete("/{plot_id}")
 def delete_plot(plot_id: str, user=Depends(get_current_user)):
-    # 1) Delete tasks under this plot first (avoid FK issues)
-    supabase.table("tasks").delete().eq("plot_id", plot_id).execute()
+    # 1) Delete dependent rows under this plot first (avoid FK issues)
+    try:
+        supabase.table("cleaned_data").delete().eq("plot_id", plot_id).execute()
+    except APIError:
+        # Ignore if cleaned_data is missing or already empty for this plot.
+        pass
+
+    try:
+        supabase.table("tasks").delete().eq("plot_id", plot_id).execute()
+    except APIError as e:
+        message = e.args[0].get("message", str(e))
+        raise HTTPException(status_code=500, detail=message)
 
     # 2) Delete plot
-    res = supabase.table("plots").delete().eq("id", plot_id).execute()
+    try:
+        res = supabase.table("plots").delete().eq("id", plot_id).execute()
+    except APIError as e:
+        message = e.args[0].get("message", str(e))
+        raise HTTPException(status_code=500, detail=message)
 
     if not res.data:
         raise HTTPException(status_code=404, detail="Plot not found")

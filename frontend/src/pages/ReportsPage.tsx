@@ -56,12 +56,11 @@ export function ReportsPage() {
 
   useEffect(() => {
     let isActive = true;
-    setLoading(true);
-    setError(null);
 
     Promise.all([listPlots(), listTasks(), listWorkers()])
       .then(([plotsRes, tasksRes, workersRes]) => {
         if (!isActive) return;
+        setError(null);
         setPlots(plotsRes.data ?? []);
         setTasks(tasksRes.data ?? []);
         setWorkers(workersRes.data ?? []);

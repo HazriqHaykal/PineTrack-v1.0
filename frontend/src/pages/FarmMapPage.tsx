@@ -1,12 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card } from "../components/ui/card";
-import { MapPin, Info } from "lucide-react";
+import { Info } from "lucide-react";
 import { toast } from "sonner";
-import { listPlots } from "../lib/api";
-import type { Plot } from "../lib/api";
+import { listPlots, listTasks } from "../lib/api";
+import type { Plot, Task } from "../lib/api";
 import { calcHarvestProgressPercent } from "../lib/progress";
+import { sortPlotsById } from "../lib/sortPlots";
 import { FarmSatelliteMap } from "../components/FarmSatelliteMap";
+import { PlotCard } from "../components/PlotCard";
+import { getPlotStatusFromTasks } from "../lib/plotStatus";
 
 interface FarmMapPageProps {
   onNavigate: (page: string, plotId?: string) => void;
@@ -16,6 +19,7 @@ type PlotVM = Plot & {
   progressPercent: number;
   lng: number | null;
   lat: number | null;
+  overallStatus: Plot["status"];
 };
 
 function toNumber(v: unknown): number | null {
@@ -33,44 +37,67 @@ function clamp(n: number, min: number, max: number) {
 
 export function FarmMapPage({ onNavigate }: FarmMapPageProps) {
   const [plots, setPlots] = useState<Plot[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const loadPlots = async () => {
-      setLoading(true);
-      try {
-        const res = await listPlots();
-        setPlots(res.data ?? []);
-      } catch (e: any) {
-        toast.error(e?.message ?? "Failed to load plots");
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadPlots();
+  const loadPlots = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [plotsRes, tasksRes] = await Promise.all([listPlots(), listTasks()]);
+      setPlots(sortPlotsById(plotsRes.data ?? []));
+      setTasks(tasksRes.data ?? []);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to load plots";
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    loadPlots();
+  }, [loadPlots]);
+
+  useEffect(() => {
+    const handler = () => {
+      loadPlots();
+    };
+    window.addEventListener("tasks:refresh", handler);
+    return () => window.removeEventListener("tasks:refresh", handler);
+  }, [loadPlots]);
+
   const plotsVM: PlotVM[] = useMemo(() => {
+    const tasksByPlot = new Map<string, Task[]>();
+    for (const task of tasks) {
+      const plotId = String(task.plot_id ?? "").trim();
+      if (!plotId) continue;
+      const bucket = tasksByPlot.get(plotId) ?? [];
+      bucket.push(task);
+      tasksByPlot.set(plotId, bucket);
+    }
+
     return (plots ?? []).map((p) => {
       const lng = toNumber(p.location_x);
       const lat = toNumber(p.location_y);
+      const plotTasks = tasksByPlot.get(p.id) ?? [];
 
       return {
         ...p,
         progressPercent: clamp(calcHarvestProgressPercent(p.planting_date), 0, 100),
         lng,
         lat,
+        overallStatus: getPlotStatusFromTasks(plotTasks),
       };
     });
-  }, [plots]);
+  }, [plots, tasks]);
 
   const plotMarkers = useMemo(() => {
     return (plotsVM ?? [])
       .map((plot) => {
         const { lng, lat } = plot;
         if (lng === null || lat === null) return null;
-        return { id: plot.id, name: plot.name, lng, lat, status: plot.status };
+        return { id: plot.id, name: plot.name, lng, lat, status: plot.overallStatus };
       })
       .filter(
         (plot): plot is { id: string; name: string; lng: number; lat: number; status: Plot["status"] } =>
@@ -89,19 +116,6 @@ export function FarmMapPage({ onNavigate }: FarmMapPageProps) {
 
   // Only plots with usable coordinates
   const mappable = useMemo(() => plotsVM.filter((p) => p.lng !== null && p.lat !== null), [plotsVM]);
-
-  const getStatusColor = (status: Plot["status"]) => {
-    switch (status) {
-      case "Proceed":
-        return "bg-[#16A34A] hover:bg-[#15803D]";
-      case "Pending":
-        return "bg-[#CA8A04] hover:bg-[#B87A04]";
-      case "Stop":
-        return "bg-[#DC2626] hover:bg-[#B91C1C]";
-      default:
-        return "bg-[#6B7280]";
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -164,47 +178,15 @@ export function FarmMapPage({ onNavigate }: FarmMapPageProps) {
             }`}
           >
             {mappable.map((plot) => (
-              <div
+              <PlotCard
                 key={plot.id}
-                className={`${getStatusColor(plot.status)} rounded-2xl p-6 text-white cursor-pointer transition-all transform hover:scale-105 shadow-lg`}
+                plot={plot}
+                progressPercent={plot.progressPercent}
+                status={plot.overallStatus}
+                variant="farmMap"
+                ariaLabel={`${plot.name}, status: ${plot.overallStatus}`}
                 onClick={() => onNavigate("plot-details", plot.id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") onNavigate("plot-details", plot.id);
-                }}
-                aria-label={`${plot.name}, status: ${plot.status}`}
-              >
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <h3 className="text-[22px] font-semibold leading-snug mb-1">{plot.name}</h3>
-                    <p className="text-base opacity-90">{plot.crop_type}</p>
-                  </div>
-                  <MapPin size={24} />
-                </div>
-
-                <div className="space-y-2 text-base opacity-90">
-                  <p>{plot.area_ha} hectares</p>
-                </div>
-
-                {/* Progress (same idea as Plot Management) */}
-                <div className="mt-4 pt-4 border-t border-white/20">
-                  <div className="flex items-center justify-between">
-                    <span className="text-base opacity-80">Progress</span>
-                    <span className="text-lg font-semibold">{plot.progressPercent}%</span>
-                  </div>
-                  <div className="w-full h-2 bg-white/20 rounded-full mt-2 overflow-hidden">
-                    <div
-                      className="h-full bg-white rounded-full"
-                      style={{ width: `${plot.progressPercent}%` }}
-                      role="progressbar"
-                      aria-valuenow={plot.progressPercent}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                    />
-                  </div>
-                </div>
-              </div>
+              />
             ))}
           </div>
         )}

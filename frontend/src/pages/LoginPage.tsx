@@ -6,6 +6,7 @@ import { Card } from '../components/ui/card';
 import { Sprout, Mail, Lock } from 'lucide-react';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { login } from "../lib/api";
+import { writeStoredUser } from "../lib/userStorage";
 
 
 interface LoginPageProps {
@@ -34,31 +35,67 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     setLoading(true);
 
     try {
-      const res = await fetch('http://127.0.0.1:5001/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      });
-
-      if (!res.ok) {
-        const msg = await res.text();
-        throw new Error(msg || 'Invalid credentials');
+      const data = await login(username, password);
+      console.log("Login success:", data);
+      
+      if (!data?.access_token) {
+        setError("Login failed. Missing access token.");
+        return;
       }
 
-      const data = await res.json(); // { access_token, token_type }
-      console.log(data);
       sessionStorage.setItem("access_token", data.access_token);
       // optional: wipe any old persistent token
       localStorage.removeItem("access_token");
+      if (data.user) {
+        writeStoredUser(data.user);
+      }
 
 
       onLogin();
-    } catch (err: any) {
-      setError('Login failed. Please check username/password.');
+    } catch (err: unknown) {
+      console.error(err);
+      let errorMessage = 'Login failed. Please check username/password.';
+
+      if (err instanceof Error) {
+        const rawMessage = err.message || '';
+        let parsedDetail = '';
+        try {
+          const parsed = JSON.parse(rawMessage) as { detail?: string };
+          if (parsed?.detail) parsedDetail = parsed.detail;
+        } catch {
+          // ignore JSON parse errors
+        }
+
+          
+        const message = parsedDetail || rawMessage;
+        const normalized = message.toLowerCase();
+
+        if (
+          normalized.includes('failed to fetch') ||
+          normalized.includes('networkerror') ||
+          normalized.includes('load failed')
+        ) {
+          errorMessage =
+            'Cannot reach server. Check backend is running and VITE_API_URL.';
+        } else if (
+          normalized.includes('invalid username or password') ||
+          normalized.includes('401')
+        ) {
+          errorMessage = 'Invalid username or password';
+        } else if (normalized.includes('500') || normalized.includes('server error')) {
+          errorMessage = 'Server error. Please try again.';
+        } else if (message.trim()) {
+          errorMessage = message;
+        }
+      }
+
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
   };
+
+  
 
   return (
     // Full-screen container, centered horizontally and vertically
@@ -99,7 +136,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                 />
                 <Input
                   id="username"
-                  type="username"
+                  type="text"
                   placeholder="Enter your username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -167,7 +204,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
 
         {/* Footer */}
         <div className="mt-8 text-center text-sm text-[#6B7280]">
-          <p>© 2025 PineTrack. All rights reserved.</p>
+          <p>© 2026 PineTrack. All rights reserved.</p>
         </div>
       </div>
     </div>

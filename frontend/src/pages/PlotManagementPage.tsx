@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -20,12 +20,12 @@ import {
   DialogTrigger
 } from '../components/ui/dialog';
 import { StatusBadge } from '../components/StatusBadge';
-import { createPlotWithPlan, listPlots, updatePlot } from '../lib/api';
-import type { Plot } from '../lib/api';
+import { createPlotWithPlan, listPlots, listTasks, updatePlot } from '../lib/api';
+import type { Plot, Task } from '../lib/api';
 import { Plus, Search, Edit, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { deletePlot } from "../lib/api";
-import { apiFetch } from "../lib/api";
+import { getPlotStatusFromTasks } from '../lib/plotStatus';
 
 
 
@@ -52,10 +52,10 @@ function calcHarvestProgressPercent(plantingDateISO: string, cycleDays = 420): n
 export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [plots, setPlots] = useState<Plot[]>([]);
-  const [loadingPlots, setLoadingPlots] = useState(false);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-  const [selectedPlot, setSelectedPlot] = useState<any>(null);
+  const [selectedPlot, setSelectedPlot] = useState<Plot | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const defaultGrowthStage = 'Establishment';
   const [formData, setFormData] = useState({
@@ -66,11 +66,10 @@ export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
   });
 
   const loadPlots = async () => {
-    setLoadingPlots(true);
     try {
-      const res = await listPlots();
+      const [plotsRes, tasksRes] = await Promise.all([listPlots(), listTasks()]);
       // Sort by created_at (oldest first) so newly added plots land at the bottom.
-      const sortedPlots = (res.data ?? []).slice().sort((a, b) => {
+      const sortedPlots = (plotsRes.data ?? []).slice().sort((a, b) => {
         const aTime = Date.parse(a.created_at ?? "");
         const bTime = Date.parse(b.created_at ?? "");
 
@@ -82,15 +81,22 @@ export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
       });
 
       setPlots(sortedPlots);
-    } catch (e: any) {
-      toast.error(e.message ?? 'Failed to load plots');
-    } finally {
-      setLoadingPlots(false);
+      setTasks(tasksRes.data ?? []);
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Failed to load plots');
     }
   };
 
   useEffect(() => {
     loadPlots();
+  }, []);
+
+  useEffect(() => {
+    const handler = () => {
+      loadPlots();
+    };
+    window.addEventListener("tasks:refresh", handler);
+    return () => window.removeEventListener("tasks:refresh", handler);
   }, []);
 
   const filteredPlots = useMemo(() => {
@@ -100,6 +106,24 @@ export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
         plot.crop_type.toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [plots, searchTerm]);
+
+  const plotStatusById = useMemo(() => {
+    const tasksByPlot = new Map<string, Task[]>();
+    for (const task of tasks) {
+      const plotId = String(task.plot_id ?? "").trim();
+      if (!plotId) continue;
+      const bucket = tasksByPlot.get(plotId) ?? [];
+      bucket.push(task);
+      tasksByPlot.set(plotId, bucket);
+    }
+
+    const map = new Map<string, Task["decision"]>();
+    for (const plot of plots) {
+      const plotTasks = tasksByPlot.get(plot.id) ?? [];
+      map.set(plot.id, getPlotStatusFromTasks(plotTasks));
+    }
+    return map;
+  }, [plots, tasks]);
 
   const handleAddPlot = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,8 +139,8 @@ export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
       setIsAddDialogOpen(false);
       setFormData({ name: '', cropType: 'MD2 Pineapple', area: '', plantingDate: '' });
       loadPlots();
-    } catch (e: any) {
-      toast.error(e.message ?? 'Failed to create plot');
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Failed to create plot');
     }
   };
 
@@ -143,13 +167,13 @@ export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
 
       // refresh plot list
       await loadPlots(); // ⬅️ your existing fetch function
-    } catch (err: any) {
-      toast.error(err?.message ?? "Failed to delete plot");
+    } catch (err) {
+      toast.error((err as Error)?.message ?? "Failed to delete plot");
     }
   };
 
 
-  const handleEditClick = (plot: any, e: React.MouseEvent) => {
+  const handleEditClick = (plot: Plot, e: React.MouseEvent) => {
     e.stopPropagation();
     setSelectedPlot(plot);
     setFormData({
@@ -187,9 +211,9 @@ export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
       setSelectedPlot(null);
       setFormData({ name: '', cropType: 'MD2 Pineapple', area: '', plantingDate: '' });
       await loadPlots();
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to update plot:', err);
-      toast.error(err?.message ?? 'Failed to update plot');
+      toast.error((err as Error)?.message ?? 'Failed to update plot');
     } finally {
       setIsSaving(false);
     }
@@ -434,7 +458,7 @@ export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
                     })}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={plot.status} />
+                    <StatusBadge status={plotStatusById.get(plot.id) ?? plot.status} />
                   </TableCell>
                   <TableCell>
                     {(() => {
@@ -516,7 +540,10 @@ export function PlotManagementPage({ onNavigate }: PlotManagementPageProps) {
         <Card className="rounded-2xl bg-white shadow-sm p-4">
           <p className="text-[14px] text-[#6B7280] mb-1">Active Issues</p>
           <p className="text-[20px] text-[#111827]">
-            {plots.filter((p) => p.status === 'Stop' || p.status === 'Pending').length}
+            {plots.filter((p) => {
+              const status = plotStatusById.get(p.id) ?? p.status;
+              return status === 'Stop' || status === 'Pending';
+            }).length}
           </p>
         </Card>
       </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { StatusBadge } from '../components/StatusBadge';
@@ -10,14 +10,26 @@ import {
   TableHeader,
   TableRow
 } from '../components/ui/table';
-import { approveReschedule, listPlots, listRescheduleProposals, rejectReschedule} from '../lib/api';
+import {
+  approveReschedule,
+  getAnalyticsHistory,
+  getWeatherAnalytics,
+  getWeatherRescheduleSuggestions,
+  listPlots,
+  listRescheduleProposals,
+  listTasks,
+  rejectReschedule,
+} from '../lib/api';
 import type { Task } from '../lib/api';
 import { CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import { InsightRecommendationsCard, type InsightSuggestion } from '../components/insights/InsightRecommendationsCard';
+import { ReasonCard } from '../components/ReasonCard';
 
 export function RescheduleCenterPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [plotNameMap, setPlotNameMap] = useState<Record<string, string>>({});
+  const [weatherSuggestions, setWeatherSuggestions] = useState<InsightSuggestion[]>([]);
   const rescheduleTasks = useMemo(() => tasks.filter((t) => t.proposed_date), [tasks]);
 
   const loadData = async () => {
@@ -28,8 +40,103 @@ export function RescheduleCenterPage() {
     setTasks(tasksRes.data);
   };
 
+  const loadInsights = async () => {
+    const safeFetch = async <T,>(promise: Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return await promise;
+      } catch (e) {
+        console.error("Partial fetch error:", e);
+        return fallback;
+      }
+    };
+
+    try {
+      interface RawBackendHistory {
+        data_added: string;
+        temperature: number;
+        cleaned_temperature: number;
+        soil_moisture: number;
+        cleaned_soil_moisture: number;
+        nitrogen: number;
+        cleaned_nitrogen: number;
+        [key: string]: unknown;
+      }
+
+      type WeatherItem = { date?: string; time?: string; [key: string]: unknown };
+
+      const history = await safeFetch<RawBackendHistory[]>(
+        getAnalyticsHistory(30) as unknown as Promise<RawBackendHistory[]>,
+        [],
+      );
+      const processedHistory = history.map((item) => ({
+        ...item,
+        temperature_clean: item.cleaned_temperature,
+        moisture_clean: item.cleaned_soil_moisture,
+        nitrogen_clean: item.cleaned_nitrogen,
+      }));
+
+      const weather = await safeFetch<WeatherItem[]>(getWeatherAnalytics(), []);
+
+      const allTasksRes = await safeFetch(listTasks(), { ok: true, data: [] });
+      const today = new Date();
+      const todayStr = today.toISOString().slice(0, 10);
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+      
+      // Include both today and tomorrow for suggestions (alignment with task evaluation)
+      const upcomingTasks = allTasksRes.data.filter((t) => 
+        t.task_date === todayStr || t.task_date === tomorrowStr
+      );
+
+      const upcomingWeather = weather.filter((w) => {
+        const dateStr = w.date || w.time;
+        if (!dateStr) return false;
+        const wDate = dateStr.slice(0, 10);
+        return wDate === todayStr || wDate === tomorrowStr;
+      });
+
+      let sensorSummary = null;
+      if (processedHistory.length > 0) {
+        const latest = processedHistory[processedHistory.length - 1];
+        sensorSummary = {
+          avg_n: latest.nitrogen_clean,
+          avg_moisture: latest.moisture_clean,
+          avg_temp: latest.temperature_clean,
+        };
+      }
+
+      let suggestions: InsightSuggestion[] = [];
+      try {
+        const result = await getWeatherRescheduleSuggestions(
+          upcomingTasks,
+          upcomingWeather,
+          sensorSummary,
+        );
+        suggestions = result.suggestions ?? [];
+      } catch (e) {
+        console.error("Insight suggestion error:", e);
+      }
+      setWeatherSuggestions(suggestions);
+    } catch (err) {
+      console.error("Critical error in reschedule insights:", err);
+    }
+  };
+
   useEffect(() => {
-    loadData().catch((e) => toast.error(e.message ?? 'Failed to load reschedule proposals'));
+    (async () => {
+      try {
+        await loadData();
+      } catch (e) {
+        toast.error((e as Error).message ?? 'Failed to load reschedule proposals');
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      await loadInsights();
+    })();
   }, []);
 
   const handleApprove = async (taskId: string) => {
@@ -37,8 +144,9 @@ export function RescheduleCenterPage() {
       await approveReschedule(taskId);
       toast.success('Reschedule approved and applied');
       loadData();
-    } catch (e: any) {
-      toast.error(e.message ?? 'Approve failed');
+      window.dispatchEvent(new Event('tasks:refresh'));
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Approve failed');
     }
   };
 
@@ -47,8 +155,9 @@ export function RescheduleCenterPage() {
       await rejectReschedule(taskId);
       toast.success('Reschedule rejected - original date maintained');
       loadData();
-    } catch (e: any) {
-      toast.error(e.message ?? 'Reject failed');
+      window.dispatchEvent(new Event('tasks:refresh'));
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Reject failed');
     }
   };
 
@@ -71,7 +180,7 @@ export function RescheduleCenterPage() {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="p-5 rounded-2xl bg-white shadow-sm">
           <div className="flex items-center gap-3 mb-2">
             <div className="w-10 h-10 bg-[#DC2626]/10 rounded-xl flex items-center justify-center">
@@ -101,19 +210,6 @@ export function RescheduleCenterPage() {
           </div>
           <p className="text-[14px] text-[#6B7280]">Tasks delayed for optimal conditions</p>
         </Card>
-
-        <Card className="p-5 rounded-2xl bg-white shadow-sm">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 bg-[#2563EB]/10 rounded-xl flex items-center justify-center">
-              <CheckCircle2 className="text-[#2563EB]" size={20} />
-            </div>
-            <div>
-              <p className="text-[14px] text-[#6B7280]">Avg Delay</p>
-              <p className="text-[20px] text-[#111827]">3.2 days</p>
-            </div>
-          </div>
-          <p className="text-[14px] text-[#6B7280]">Average rescheduling period</p>
-        </Card>
       </div>
 
       {/* Reschedule Table */}
@@ -124,7 +220,7 @@ export function RescheduleCenterPage() {
 
         {rescheduleTasks.length > 0 ? (
           <div className="overflow-x-auto">
-            <Table>
+            <Table className="table-fixed w-full">
               <TableHeader>
                 <TableRow className="bg-[#F9FAFB] hover:bg-[#F9FAFB] border-b border-[#E5E7EB]">
                   <TableHead className="pl-8 text-[14px]">Plot</TableHead>
@@ -132,12 +228,13 @@ export function RescheduleCenterPage() {
                   <TableHead className="text-[14px]">Original Date</TableHead>
                   <TableHead className="text-[14px]">Proposed Date</TableHead>
                   <TableHead className="text-[14px]">Status</TableHead>
-                  <TableHead className="text-[14px]">Reason</TableHead>
-                  <TableHead className="text-right pr-8 text-[14px]">Actions</TableHead>
+                  <TableHead className="text-[14px] w-[320px]">Reason</TableHead>
+                  <TableHead className="text-right pr-8 text-[14px] w-[220px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rescheduleTasks.map((task) => (
+                {rescheduleTasks.map((task) => {
+                  return (
                   <TableRow 
                     key={task.id} 
                     className="hover:bg-[#F0FDF4] transition-colors border-b border-[#E5E7EB]"
@@ -163,10 +260,10 @@ export function RescheduleCenterPage() {
                     <TableCell>
                       <StatusBadge status={task.decision} />
                     </TableCell>
-                    <TableCell>
-                      <p className="text-[14px] text-[#6B7280] max-w-xs">{task.reason}</p>
+                    <TableCell className="w-[320px] align-top">
+                      <ReasonCard reasonText={task.reason ?? ''} status={task.decision} />
                     </TableCell>
-                    <TableCell className="text-right pr-8">
+                    <TableCell className="text-right pr-8 w-[220px]">
                       <div className="flex justify-end gap-2">
                         <Button
                           size="sm"
@@ -188,7 +285,7 @@ export function RescheduleCenterPage() {
                       </div>
                     </TableCell>
                   </TableRow>
-                ))}
+                )})}
               </TableBody>
             </Table>
           </div>
@@ -201,28 +298,11 @@ export function RescheduleCenterPage() {
         )}
       </Card>
 
-      {/* AI Insights */}
-      <Card className="p-6 rounded-2xl bg-gradient-to-br from-[#2563EB] to-[#3B82F6] text-white shadow-sm">
-        <h3 className="text-[18px] mb-4">AI Reschedule Insights</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-white/10 rounded-xl p-4">
-            <p className="text-[14px] opacity-90 mb-1">Most Common Reason</p>
-            <p className="text-[16px]">Heavy rainfall forecasted</p>
-          </div>
-          <div className="bg-white/10 rounded-xl p-4">
-            <p className="text-[14px] opacity-90 mb-1">Weather-related Delays</p>
-            <p className="text-[16px]">68% of reschedules</p>
-          </div>
-          <div className="bg-white/10 rounded-xl p-4">
-            <p className="text-[14px] opacity-90 mb-1">Soil Condition Delays</p>
-            <p className="text-[16px]">25% of reschedules</p>
-          </div>
-          <div className="bg-white/10 rounded-xl p-4">
-            <p className="text-[14px] opacity-90 mb-1">Approval Rate</p>
-            <p className="text-[16px]">94% accepted</p>
-          </div>
-        </div>
-      </Card>
+      {/* Insight Recommendation (Weather-based) */}
+      <InsightRecommendationsCard
+        variant="analytics"
+        suggestions={weatherSuggestions}
+      />
     </div>
   );
 }

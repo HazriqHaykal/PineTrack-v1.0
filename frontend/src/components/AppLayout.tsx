@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Outlet } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -16,6 +16,14 @@ import {
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
+import {
+  PROFILE_UPDATED_EVENT,
+  getDisplayEmail,
+  getDisplayName,
+  getInitials,
+  readStoredUser,
+  type StoredUser,
+} from "../lib/userStorage";
 
 interface AppLayoutProps {
   currentPage: string;
@@ -25,6 +33,7 @@ interface AppLayoutProps {
 
 export function AppLayout({ currentPage, onNavigate }: AppLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [storedUser, setStoredUser] = useState<StoredUser | null>(() => readStoredUser());
 
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -37,6 +46,23 @@ export function AppLayout({ currentPage, onNavigate }: AppLayoutProps) {
     { id: 'reports', label: 'Reports', icon: FileText },
     { id: 'settings', label: 'Configuration', icon: Settings }
   ];
+
+  useEffect(() => {
+    const handleProfileUpdate = () => {
+      setStoredUser(readStoredUser());
+    };
+
+    window.addEventListener(PROFILE_UPDATED_EVENT, handleProfileUpdate);
+    window.addEventListener("storage", handleProfileUpdate);
+    return () => {
+      window.removeEventListener(PROFILE_UPDATED_EVENT, handleProfileUpdate);
+      window.removeEventListener("storage", handleProfileUpdate);
+    };
+  }, []);
+
+  const displayName = getDisplayName(storedUser);
+  const displayEmail = getDisplayEmail(storedUser);
+  const initials = getInitials(displayName, displayEmail);
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -89,15 +115,20 @@ export function AppLayout({ currentPage, onNavigate }: AppLayoutProps) {
 
           {/* User info */}
           <div className="p-4 border-t border-[#E5E7EB]">
-            <div className="flex items-center gap-3">
+            <button
+              type="button"
+              className="w-full flex items-center gap-3 rounded-xl p-2 -m-2 hover:bg-[#F9FAFB] transition-colors text-left"
+              onClick={() => onNavigate("profile")}
+              aria-label="Open profile"
+            >
               <div className="w-10 h-10 bg-[#15803D] rounded-full flex items-center justify-center text-white">
-                FM
+                {initials}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm text-[#111827] truncate">Farm Manager</p>
-                <p className="text-xs text-[#6B7280] truncate">manager@pinetrack.com</p>
+                <p className="text-sm text-[#111827] truncate">{displayName}</p>
+                <p className="text-xs text-[#6B7280] truncate">{displayEmail}</p>
               </div>
-            </div>
+            </button>
           </div>
         </div>
       </aside>
