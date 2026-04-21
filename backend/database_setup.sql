@@ -1,4 +1,6 @@
 -- Run this script in your Supabase SQL Editor to create the required tables.
+-- NOTE: This file contains a minimal subset of tables.
+-- For the full backend schema expected by the app, use complete_database_setup.sql.
 
 -- 1. Create the Raw Usage Table (Source)
 CREATE TABLE IF NOT EXISTS public.raw_data (
