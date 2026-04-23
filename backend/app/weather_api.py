@@ -6,6 +6,10 @@ from datetime import datetime, timedelta
 LAT = 2.8149
 LON = 102.2854
 
+# Simple in-memory cache
+weather_cache = {}
+CACHE_DURATION = timedelta(hours=1)
+
 def get_weather_data(past_days=20, forecast_days=7):
     """
     Retrieves both historical and forecast weather data from Open-Meteo API.
@@ -17,6 +21,14 @@ def get_weather_data(past_days=20, forecast_days=7):
     Returns:
         list: Weather data with 'type' field ("Historical" or "Forecast")
     """
+    cache_key = f"weather_data_{past_days}_{forecast_days}"
+    now = datetime.now()
+    
+    if cache_key in weather_cache:
+        cached_time, cached_data = weather_cache[cache_key]
+        if now - cached_time < CACHE_DURATION:
+            return cached_data
+    
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": LAT,
@@ -55,8 +67,21 @@ def get_weather_data(past_days=20, forecast_days=7):
                 "type": "Historical" if is_historical else "Forecast"
             })
             
+        weather_cache[cache_key] = (now, result)
         return result
         
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            # Rate limit hit, return cached data if available
+            if cache_key in weather_cache:
+                cached_time, cached_data = weather_cache[cache_key]
+                if now - cached_time < timedelta(hours=2):  # Extend cache on rate limit
+                    return cached_data
+            # No cache, return empty
+            return []
+        else:
+            print(f"Weather API Error: {e}")
+            return []
     except Exception as e:
         print(f"Weather API Error: {e}")
         return []
@@ -86,6 +111,14 @@ def fetch_dashboard_weather():
     """
     Fetches current weather and 10-day daily forecast for the dashboard.
     """
+    cache_key = "dashboard_weather"
+    now = datetime.now()
+    
+    if cache_key in weather_cache:
+        cached_time, cached_data = weather_cache[cache_key]
+        if now - cached_time < CACHE_DURATION:
+            return cached_data
+    
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": LAT,
@@ -165,11 +198,32 @@ def fetch_dashboard_weather():
                 "condition": w_cond
             })
             
-        return {
+        result = {
             "current": current_weather,
             "forecast": forecast
         }
         
+        weather_cache[cache_key] = (now, result)
+        return result
+        
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            # Rate limit hit, return cached data if available
+            if cache_key in weather_cache:
+                cached_time, cached_data = weather_cache[cache_key]
+                if now - cached_time < timedelta(hours=2):
+                    return cached_data
+            # No cache, return fallback
+            return {
+                "current": {"temperature": 0, "condition": "Rate limit exceeded, try again later", "humidity": 0, "windSpeed": 0, "icon": "cloud"},
+                "forecast": []
+            }
+        else:
+            print(f"Weather Fetch Error: {e}")
+            return {
+                "current": {"temperature": 0, "condition": f"Error: {str(e)}", "humidity": 0, "windSpeed": 0, "icon": "cloud"},
+                "forecast": []
+            }
     except Exception as e:
         print(f"Weather Fetch Error: {e}")
         import traceback
