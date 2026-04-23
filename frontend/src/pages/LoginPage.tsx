@@ -195,11 +195,6 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               {loading ? 'Signing in...' : 'Sign In'}
             </Button>
           </form>
-
-          {/* Demo info text */}
-          <div className="mt-6 text-center text-sm text-[#6B7280]">
-            Demo credentials: admin / 123456
-          </div>
         </Card>
 
         {/* Footer */}
