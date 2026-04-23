@@ -1,11 +1,10 @@
-import React from 'react';
 
 interface ForecastFilterProps {
   selected: '1W';
   onChange: (value: '1W') => void;
 }
 
-export function ForecastFilter({ selected, onChange }: ForecastFilterProps) {
+export function ForecastFilter({ selected: _selected, onChange }: ForecastFilterProps) {
   const options: Array<{ value: '1W'; label: string }> = [
     { value: '1W', label: '1 Week' }
   ];

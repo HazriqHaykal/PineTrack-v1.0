@@ -1,5 +1,3 @@
-import React from 'react';
-import { Badge } from './ui/badge';
 import { CheckCircle2, Clock, XCircle } from 'lucide-react';
 
 interface StatusBadgeProps {
@@ -7,7 +5,7 @@ interface StatusBadgeProps {
   size?: 'sm' | 'md' | 'lg';
 }
 
-export function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
+export function StatusBadge({ status, size: _size = 'md' }: StatusBadgeProps) {
   const config = {
     Proceed: {
       bg: 'bg-[#86EFAC]',

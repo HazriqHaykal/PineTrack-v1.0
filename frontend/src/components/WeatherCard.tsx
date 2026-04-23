@@ -1,4 +1,3 @@
-import React from 'react';
 import { Card } from './ui/card';
 import { Cloud, CloudRain, Sun, CloudSun } from 'lucide-react';
 
