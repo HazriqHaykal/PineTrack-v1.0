@@ -9,6 +9,31 @@ LON = 102.2854
 # Simple in-memory cache
 weather_cache = {}
 CACHE_DURATION = timedelta(hours=1)
+MIN_REQUEST_INTERVAL = timedelta(minutes=5)
+last_weather_request = datetime.min
+
+
+def _get_cached_weather(cache_key: str, max_age: timedelta = CACHE_DURATION):
+    now = datetime.now()
+    if cache_key in weather_cache:
+        cached_time, cached_data = weather_cache[cache_key]
+        if now - cached_time < max_age:
+            return cached_data
+    return None
+
+
+def _set_cached_weather(cache_key: str, data):
+    weather_cache[cache_key] = (datetime.now(), data)
+
+
+def _get_stale_weather(cache_key: str, stale_age: timedelta = timedelta(hours=2)):
+    now = datetime.now()
+    if cache_key in weather_cache:
+        cached_time, cached_data = weather_cache[cache_key]
+        if now - cached_time < stale_age:
+            return cached_data
+    return None
+
 
 def get_weather_data(past_days=20, forecast_days=7):
     """
@@ -21,14 +46,21 @@ def get_weather_data(past_days=20, forecast_days=7):
     Returns:
         list: Weather data with 'type' field ("Historical" or "Forecast")
     """
+    global last_weather_request
     cache_key = f"weather_data_{past_days}_{forecast_days}"
     now = datetime.now()
-    
-    if cache_key in weather_cache:
-        cached_time, cached_data = weather_cache[cache_key]
-        if now - cached_time < CACHE_DURATION:
-            return cached_data
-    
+
+    # Return fresh cached weather if available
+    cached_data = _get_cached_weather(cache_key)
+    if cached_data is not None:
+        return cached_data
+
+    # Avoid send repeated API requests within a short interval
+    if now - last_weather_request < MIN_REQUEST_INTERVAL:
+        stale_data = _get_stale_weather(cache_key)
+        if stale_data is not None:
+            return stale_data
+
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": LAT,
@@ -40,7 +72,7 @@ def get_weather_data(past_days=20, forecast_days=7):
     }
     
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         
@@ -67,23 +99,28 @@ def get_weather_data(past_days=20, forecast_days=7):
                 "type": "Historical" if is_historical else "Forecast"
             })
             
-        weather_cache[cache_key] = (now, result)
+        _set_cached_weather(cache_key, result)
+        last_weather_request = now
         return result
         
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 429:
-            # Rate limit hit, return cached data if available
-            if cache_key in weather_cache:
-                cached_time, cached_data = weather_cache[cache_key]
-                if now - cached_time < timedelta(hours=2):  # Extend cache on rate limit
-                    return cached_data
-            # No cache, return empty
+            # Rate limit hit, return fresh or stale cached data if available.
+            stale_data = _get_stale_weather(cache_key)
+            if stale_data is not None:
+                return stale_data
             return []
         else:
             print(f"Weather API Error: {e}")
+            stale_data = _get_stale_weather(cache_key)
+            if stale_data is not None:
+                return stale_data
             return []
     except Exception as e:
         print(f"Weather API Error: {e}")
+        stale_data = _get_stale_weather(cache_key)
+        if stale_data is not None:
+            return stale_data
         return []
 
 def get_weather_icon_and_condition(code):
@@ -111,13 +148,18 @@ def fetch_dashboard_weather():
     """
     Fetches current weather and 10-day daily forecast for the dashboard.
     """
+    global last_weather_request
     cache_key = "dashboard_weather"
     now = datetime.now()
     
-    if cache_key in weather_cache:
-        cached_time, cached_data = weather_cache[cache_key]
-        if now - cached_time < CACHE_DURATION:
-            return cached_data
+    cached_data = _get_cached_weather(cache_key)
+    if cached_data is not None:
+        return cached_data
+
+    if now - last_weather_request < MIN_REQUEST_INTERVAL:
+        stale_data = _get_stale_weather(cache_key)
+        if stale_data is not None:
+            return stale_data
     
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -130,7 +172,7 @@ def fetch_dashboard_weather():
     }
     
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         
@@ -203,23 +245,24 @@ def fetch_dashboard_weather():
             "forecast": forecast
         }
         
-        weather_cache[cache_key] = (now, result)
+        _set_cached_weather(cache_key, result)
+        last_weather_request = now
         return result
         
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 429:
-            # Rate limit hit, return cached data if available
-            if cache_key in weather_cache:
-                cached_time, cached_data = weather_cache[cache_key]
-                if now - cached_time < timedelta(hours=2):
-                    return cached_data
-            # No cache, return fallback
+            stale_data = _get_stale_weather(cache_key)
+            if stale_data is not None:
+                return stale_data
             return {
                 "current": {"temperature": 0, "condition": "Rate limit exceeded, try again later", "humidity": 0, "windSpeed": 0, "icon": "cloud"},
                 "forecast": []
             }
         else:
             print(f"Weather Fetch Error: {e}")
+            stale_data = _get_stale_weather(cache_key)
+            if stale_data is not None:
+                return stale_data
             return {
                 "current": {"temperature": 0, "condition": f"Error: {str(e)}", "humidity": 0, "windSpeed": 0, "icon": "cloud"},
                 "forecast": []
@@ -228,7 +271,9 @@ def fetch_dashboard_weather():
         print(f"Weather Fetch Error: {e}")
         import traceback
         traceback.print_exc()
-        # Return fallback or empty structure
+        stale_data = _get_stale_weather(cache_key)
+        if stale_data is not None:
+            return stale_data
         return {
             "current": {"temperature": 0, "condition": f"Error: {str(e)}", "humidity": 0, "windSpeed": 0, "icon": "cloud"},
             "forecast": []
