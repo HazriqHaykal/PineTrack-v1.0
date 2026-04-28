@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
-import maplibregl from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
+import * as L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 export type PlotMarker = {
   id: string;
@@ -24,8 +24,8 @@ export function FarmSatelliteMap({
   onPlotClick,
 }: FarmSatelliteMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<maplibregl.Map | null>(null);
-  const markersRef = useRef<maplibregl.Marker[]>([]);
+  const mapRef = useRef<L.Map | null>(null);
+  const markersRef = useRef<L.Marker[]>([]);
 
   const resolvedCenter = useMemo(() => {
     if (center) return center;
@@ -36,19 +36,27 @@ export function FarmSatelliteMap({
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
-    const map = new maplibregl.Map({
-      container: mapContainerRef.current,
-      style: "https://demotiles.maplibre.org/style.json",
-      center: [resolvedCenter.lng, resolvedCenter.lat],
+    const map = L.map(mapContainerRef.current, {
+      center: [resolvedCenter.lat, resolvedCenter.lng],
       zoom,
+      zoomControl: false,
     });
 
-    map.addControl(new maplibregl.NavigationControl(), "top-right");
+    L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        attribution:
+          'Tiles &copy; Esri &mdash; Source: Esri, USGS, NOAA',
+        maxZoom: 19,
+      }
+    ).addTo(map);
+
+    L.control.zoom({ position: "topright" }).addTo(map);
     mapRef.current = map;
 
     return () => {
-      mapRef.current = null;
       map.remove();
+      mapRef.current = null;
     };
   }, [resolvedCenter.lng, resolvedCenter.lat, zoom]);
 
@@ -73,25 +81,25 @@ export function FarmSatelliteMap({
     };
 
     plots.forEach((plot) => {
-      const el = document.createElement("div");
-      el.style.width = "12px";
-      el.style.height = "12px";
-      el.style.borderRadius = "9999px";
-      el.style.backgroundColor = statusColor(plot.status);
-      el.style.border = "2px solid #FFFFFF";
-      el.style.boxShadow = "0 0 0 2px rgba(0, 0, 0, 0.08)";
-      el.style.cursor = "pointer";
+      const iconHtml = `
+        <div style="width:16px;height:16px;border-radius:50%;background:${statusColor(
+          plot.status
+        )};border:2px solid #fff;box-shadow:0 0 0 2px rgba(0,0,0,0.08);"></div>`;
 
-      const popup = new maplibregl.Popup({ offset: 14 }).setHTML(
-        `<div style="font-size:12px;line-height:1.2;"><strong>${plot.name}</strong><br/>ID: ${plot.id}</div>`
+      const marker = L.marker([plot.lat, plot.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: iconHtml,
+          iconSize: [20, 20],
+          iconAnchor: [10, 10],
+        }),
+      }).addTo(map);
+
+      marker.bindPopup(
+        `<div style="font-size:12px;line-height:1.3;"><strong>${plot.name}</strong><br/>ID: ${plot.id}</div>`
       );
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([plot.lng, plot.lat])
-        .setPopup(popup)
-        .addTo(map);
 
-      el.addEventListener("click", () => {
-        marker.togglePopup();
+      marker.on("click", () => {
         onPlotClick?.(plot.id);
       });
 
